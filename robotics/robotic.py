@@ -78,14 +78,22 @@ class RoboticArmDriver:
             servo.moveTo(target_angle, duration, steps)
 
     def goHome(self):
-        for servo in self.servos.values():
-            servo.goToHomePosition()
+        steps=10
+        home_angles = [servo.home_angle for servo in self.servos.values()]
+        joint_names = list(self.servos.keys())[:5]
+        for step in range(steps):
+            for name, target in zip(joint_names, home_angles):
+                current = self.servos[name].current_angle
+                delta = (target - current) / (steps - step)
+                self.servos[name].setAngle(current + delta)
+            time.sleep(1 / steps)
+
 
 
     def move_to_pose(self, position, euler_angles, duration=1.0, steps=100):
         angles = self.kinematics_solver.solve_ik(*position, euler_angles)
         angles = list(map(lambda r:round(math.degrees(r), 2) + 90,angles.tolist()))[:5]
-        angles[1] = angles[1] - 45
+        angles[1] = 225 - angles[1] 
         print(angles)
         joint_names = list(self.servos.keys())[:5]  # first 5 joints
         sleep_time = duration/steps
@@ -103,9 +111,7 @@ class RoboticArmDriver:
     def open_gripper(self, width):
         servo = self.servos.get("gripper")
         if servo:
-            angle = np.interp(width, [servo.min_angle, servo.max_angle], [servo.min_angle, servo.max_angle])
-            # angle = np.clip(angle, servo.min_angle, servo.max_angle)
-            servo.setAngle(angle)
+            servo.setAngle( width/10 * (servo.max_angle - servo.min_angle))
 
     def cleanup(self):
         self.board.exit()

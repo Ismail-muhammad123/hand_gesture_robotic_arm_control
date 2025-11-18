@@ -11,7 +11,7 @@ class FiveDOF_IKSolver:
     def __init__(self):
         self.chain = Chain(name='5dof_arm', links=[
             URDFLink(name="base_rotation",  origin_translation=[0, 0, 0.05],  origin_orientation=[0, 0, 0], rotation=[0, 0, 1]),
-            URDFLink(name="shoulder",       origin_translation=[0.02, 0, 0.05],  origin_orientation=[0, 0, 0], rotation=[0, 1, 0]),
+            URDFLink(name="shoulder",       origin_translation=[0, 0, 0.05],  origin_orientation=[0,0, 0], rotation=[0, 1, 0]),
             URDFLink(name="elbow",          origin_translation=[0, 0, 0.12],  origin_orientation=[0, 0, 0], rotation=[0, 1, 0]),
             URDFLink(name="wrist_roll",     origin_translation=[0, 0, 0.09],  origin_orientation=[0, 0, 0], rotation=[0, 0, 1]),
             URDFLink(name="wrist_pitch",    origin_translation=[0, 0, 0.03],  origin_orientation=[0, 0, 0], rotation=[0, 1, 0]),
@@ -51,4 +51,6 @@ if __name__ == "__main__":
     ee_pose = solver.forward_kinematics(joint_angles)
     print("Computed position: %s, original position : %s" % (ee_pose[:3, 3], target_pos))
     print("Computed position (readable) : %s" % [ '%.2f' % elem for elem in ee_pose[:3, 3] ])
+
+   
 

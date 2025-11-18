@@ -8,6 +8,9 @@ import time
 from ik_solver import FiveDOF_IKSolver
 from robotics.robotic import RoboticArmDriver
 
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+
 sampling_interval = 0.01
 scaling_factor = 2
 threashold_value = 5
@@ -18,15 +21,15 @@ MAX_GRIPPER_DISTANCE = 10.0  # Maximum gripper opening (cm)
 TRACK_TWO_HANDS = False # True if two hand will be used
 SHOW_SIMULATION=True
 
-
-REACH_RANGE=[
+REACH_RANGE = [
     [0,50],
     [0,50],
     [0,50],
 ]
 
-current_position = [20,20,20]
 
+current_position = [0.02,0.02,0.02]
+latest_angles = [0, 0, 0, 0, 0, 0]  
 # Initialize MediaPipe Hand Detection
 mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
@@ -43,42 +46,45 @@ cap = cv2.VideoCapture(0)
 def euclidean_distance(p1, p2):
     return math.sqrt((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2 + (p2[2] - p1[2]) ** 2)
 
+def interpolate(z, z_min=0, z_max=5, new_min=0, new_max=10):
+    z_clipped = max(min(z, z_max), z_min)  # Clamp z to avoid overflow
+    return (z_clipped - z_min) / (z_max - z_min) * (new_max - new_min) + new_min
+
 # Function to generate arm position command (x, y, z)
 def generate_arm_position(hand_landmarks):
     # Extract landmarks of the hand (index finger tip, wrist, etc.)
     wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-    # thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
-    # index_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
-
     
     # The position of wrist gives us x, y, z coordinates
-    # x,y,z = midpoint(thumb_tip.x, thumb_tip.y, thumb_tip.z, index_tip.x, index_tip.y, index_tip.z)
     x,y,z = wrist.x, wrist.y, wrist.z
+    index_base = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_MCP]
+
+    z= euclidean_distance((wrist.x, wrist.y, wrist.z), (index_base.x, index_base.y,  index_base.z))
+   
+    
     x = x * 10  # Convert to cm or appropriate unit
     y = y * 10
-    z = abs(z * 10**7)  # Depth/Distance from camera
+    z = z * 10 
+
+    y = 10-y # revses to make origin at the bottom
 
 
     # convert to two decimal places
-    x = round(x, 0)
-    y = round(y, 0) 
-    z = round(z, 0)
+    x = interpolate(x, z_min=0, z_max=10, new_min=-5, new_max=5)
 
-
-    # Subtract values from 100
-    # x = REACH_RANGE[0][1] - x
-    # y = REACH_RANGE[1][1] - y
-    # z = REACH_RANGE[2][1] - z
-    y = 10-y
-    z=10-z
+    x = round(x, 1)
+    y = round(y, 1)
+    z = round(z, 1) 
+    # z = round(interpolate(z, new_max=10), 1)
 
     # Swap x, y, z axes
     x, y, z = z, x, y
-    # print("pos x: ", x)
-    # print("pos y: ", y)
-    # print("pos z: ", z)
 
-    # Return arm position (x, y, z)
+    print("-----------")
+    print("POS X: ", x)
+    print("POS Y: ", y)
+    print("POS Z: ", z)
+    print("-----------")
     return x, y, z
 
 def midpoint(x1, y1, z1, x2, y2, z2):
@@ -141,24 +147,25 @@ def is_only_thumb_and_index_open(hand_landmarks):
 
 # ========================================================================
 # ROBOTIC ARM CONTROL
-servos_config = [
-    # [pin_number, name, home_angle, current_angle, max_angle, min_angle]
-    (3, "base", 90, 90, 180, 0),
-    (5, "shoulder", 120, 90, 180, 0),
-    (6, "elbow", 170, 90, 180, 0),
-    # (9, "wrist_pitch", 140, 45, 180, 0),
-    # (10, "wrist_roll", 90, 90, 180, 0),
-    # (11, "gripper", 50, 50, 50, 0),
-]
+SERVO_CONFIG = {
+    "gripper": {"pin": 9, "min_angle": 0, "max_angle": 70},
+    "elbow": {"pin": 6, "min_angle": 50, "max_angle": 160},
+    "shoulder": {"pin": 5, "min_angle": 40, "max_angle": 180},
+    "base": {"pin": 3, "min_angle": 45, "max_angle": 225},
+}
+
+
+# [pin_number, name, home_angle, current_angle, max_angle, min_angle]
+servos_config = [(i[1]["pin"], i[0], (i[1]['max_angle'] -i[1]['min_angle'])/2, (i[1]['max_angle'] -i[1]['min_angle'])/2, i[1]['max_angle'], i[1]['min_angle']) for i in SERVO_CONFIG.items()] 
+   
 
 ik_solver =  FiveDOF_IKSolver()
 
 # Initialize the arm
-# arm = RoboticArmDriver('/dev/ttyACM0', servos_config)
+arm = RoboticArmDriver('/dev/ttyACM0', servos_config, ik_solver)
 
-# # Move servo to home position
-# arm.move_to_pose(current_position, (0,0,0), 1, 10)
-
+# Move servo to home position
+arm.goHome()
 
 # --- Command Queue ---
 command_queue = queue.Queue()
@@ -167,32 +174,29 @@ command_queue = queue.Queue()
 # --- Command Worker ---
 def command_worker():
     global current_position
+    global latest_angles
     while True:
         position, orientation, gripper_distance = command_queue.get()  # blocks until item available
         try:
             # if any([abs(i) >= threashold_value for i in position_delta]):
             #     print("Position delta: ", position_delta)
-            current_position = [position[i]/10 * 50 for i in range(len(position))] 
-            # else:
-            #     print("Position delta: ", [0,0,0])
+            current_position = [round(position[i]/10,2) for i in range(len(position))] 
+            # current_position[2]= -1 * current_position[2]
+            current_position[1] = -1 * current_position[1]
 
-            # arm.move_to_pose(position=current_position, euler_angles=(0,0,0), duration=0, steps=1)
-            # arm.open_gripper(gripper_distance)
-            
-            # if SHOW_SIMULATION:
-            #     ik_solver.move_chain_to_target(current_position)
-            
-
-            print("Position: ",  [round(i, 2) for i in  current_position])
+            print("Position: ",    current_position)
             print("Orientation: ", orientation)
             print("gripper: ", int(gripper_distance))
             print("=======================================================")
+            arm.move_to_pose(current_position, (0,0,0), 0, 1)
+            arm.open_gripper(gripper_distance)
+
+            # joint_angles = ik_solver.solve_ik(*current_position, orientation_euler=orientation)
+            # print("Joint angles (degrees):", list(map(lambda r:round(math.degrees(r), 2),joint_angles.tolist()))[:5] )
+
         except Exception as e:
             print(f"Error moving to {position} and gripper distance {gripper_distance}: \n{e}")
         command_queue.task_done()  # marks command as completed
-
-
-
 
 
 # init and start thread
@@ -200,11 +204,13 @@ worker_thread = threading.Thread(target=command_worker, daemon=True)
 worker_thread.start()
 
 
+
 # ==================================================================================
 # Main Loop for Real-Time Hand Tracking in OpenCV
 
 last_detected = None
 last_position = None
+
 while True:
     ret, frame = cap.read()
     if not ret:
@@ -225,13 +231,26 @@ while True:
     step_y = height // num_divisions
 
     for i in range(num_divisions + 1):
-        # Draw vertical grid lines
-        cv2.line(frame, (i * step_x, 0), (i * step_x, height), color=(200, 200, 200), thickness=1)
-        # Draw horizontal grid lines
-        cv2.line(frame, (0, i * step_y), (width, i * step_y), color=(200, 200, 200), thickness=1)
-        # Add labels for X and Y axes
-        cv2.putText(frame, str(i*10), (i * step_x + 5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-        cv2.putText(frame, str(i*10), (5, i * step_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+        # Calculate the center of the frame
+        center_x = width // 2
+        center_y = height // 2
+
+        # Draw vertical grid lines with center as zero
+        cv2.line(frame, (center_x + (i - num_divisions // 2) * step_x, 0), (center_x + (i - num_divisions // 2) * step_x, height), color=(200, 200, 200), thickness=1)
+        # Draw horizontal grid lines with center as zero
+        cv2.line(frame, (0, center_y - (i - num_divisions // 2) * step_y), (width, center_y - (i - num_divisions // 2) * step_y), color=(200, 200, 200), thickness=1)
+        # Add labels for X axis (right is positive)
+        # Draw X axis labels at the bottom of the frame
+        cv2.putText(
+            frame,
+            str((i - num_divisions // 2)),
+            (center_x + (i - num_divisions // 2) * step_x + 5, height - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (255, 255, 255),
+            1
+        )
+        cv2.putText(frame, str(10-i), (5, i * step_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
     
     # Process the frame and get the hand landmarks
@@ -269,26 +288,7 @@ while True:
                 cv2.line(frame, thumb_tip_coords, index_tip_coords, (255, 0, 0), 2)
 
 
-                # Send data to Arduino/ESP32 via serial (format: x,y,z,gripper_distance)
-                # command = f"{arm_position[0]:.2f},{arm_position[1]:.2f},{arm_position[2]},{gripper_distance:.2f}\n"
-                # print("COMMAND: ", command)
-
-                # ============== Send command to the robotic arm ==================
-                # now = time.time()
-                # if last_detected is None or now - last_detected >= sampling_interval:
-                    
-                # position_difference = [0,0,0]
-                
-                # if last_position is None:
-                #     position_difference = [0,0,0]
-                # else:
-                #     position_difference = [round(arm_position[i] - last_position[i], 2) for i in range(len(arm_position))]
-
-
                 command_queue.put((arm_position,(0,0,0), gripper_distance))
-                
-                    # last_detected = now
-                # last_position = arm_position
 
                 # =================================================================
 
@@ -324,5 +324,6 @@ while True:
         break
 
 # Release resources
+# arm.cleanUp()
 cap.release()
 cv2.destroyAllWindows()
